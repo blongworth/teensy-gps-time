@@ -8,9 +8,12 @@
    Compare to RTC on interval, set RTC if !=
    Write time and position to SD on interval
    Use struct to store data
+   TODO: add sync to another teensy with "T" unixtime serial send
 */
 
 #define SerialGPS Serial1
+#define SerialLander Serial2
+#define TIME_HEADER "T"
 #define SET_TIMEOUT 10 * 1000
 
 // Offset hours from gps time (UTC)
@@ -111,10 +114,19 @@ void getISO8601Timestamp(char* buffer, size_t bufferSize)
 void logData() {
   char timestamp[25];
   getISO8601Timestamp(timestamp, sizeof(timestamp));
-  double longitude = gps.location.lng(); 
-  double latitude = gps.location.lat();
   char dataString[100];
-  snprintf(dataString, sizeof(dataString), "%s,%.6f,%.6f", timestamp, longitude, latitude);
+  if (gps.location.isUpdated())
+  {
+    double longitude = gps.location.lng(); 
+    double latitude = gps.location.lat();
+    snprintf(dataString, sizeof(dataString), "%s,%.6f,%.6f", timestamp, longitude, latitude);
+  }
+  else
+  {
+    const char* longitude = "NA"; 
+    const char* latitude = "NA";
+    snprintf(dataString, sizeof(dataString), "%s,%s,%s", timestamp, longitude, latitude);
+  }
 
   File dataFile = SD.open("datalog.txt", FILE_WRITE);
 
@@ -130,11 +142,22 @@ void logData() {
   }
 }
 
+void sendTime()
+{
+  char timestamp[25];
+  getISO8601Timestamp(timestamp, sizeof(timestamp));
+  long curtime = now();
+  Serial2.write(TIME_HEADER);
+  Serial2.write(curtime);
+  Serial2.write("\n");
+}
+
 void setup()
 {
   Serial.begin(9600);
   while (!Serial);  // Wait for Arduino Serial Monitor to open
   SerialGPS.begin(9600);
+  SerialLander.begin(9600);
   Serial.println("Waiting for GPS time ... ");
   setSyncProvider(getTeensy3Time);
 
@@ -168,6 +191,7 @@ void loop()
           (setclock >= SET_TIMEOUT || year() < 2024)) 
       {
         setTimeGPS();
+        sendTime();
         setclock = 0;
       }
     }
