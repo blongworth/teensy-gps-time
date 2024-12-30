@@ -186,6 +186,8 @@ void loop()
     if (gps.encode(SerialGPS.read())) { // process gps messages
       // when TinyGPS reports new data...
       // displayInfo();
+      // these are still true even if there's no GPS fix.
+      // pps output stops when no fix
       if (gps.time.isUpdated() && 
           gps.time.age() < 500 && 
           (setclock >= SET_TIMEOUT || year() < 2024)) 
