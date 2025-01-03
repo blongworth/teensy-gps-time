@@ -25,6 +25,20 @@ TinyGPSPlus gps;
 const int chipSelect = BUILTIN_SDCARD;
 char iso_ts[25];
 char iso_gps[25];
+bool primed = false;
+bool high_wait = false;
+volatile bool pps_state = false;
+elapsedMillis gpsms;
+elapsedMillis tms;
+
+void ppsISR() {
+  bool state = digitalRead(PPS_PIN);
+  if (state && !pps_state) { // Rising edge
+    gpsms = 0;
+  }
+  pps_state = state;
+}
+
 
 time_t getTeensy3Time()
 {
@@ -71,15 +85,15 @@ void displayInfo()
 
 void getISO8601Timestamp(char* buffer, size_t bufferSize)
 {
-  snprintf(buffer, bufferSize, "%04d-%02d-%02dT%02d:%02d:%02dZ", 
-           year(), month(), day(), hour(), minute(), second());
+  snprintf(buffer, bufferSize, "%04d-%02d-%02dT%02d:%02d:%02d.%02dZ", 
+           year(), month(), day(), hour(), minute(), second(), tms);
 }
 
 void getISO8601TimestampGPS(char* buffer, size_t bufferSize)
 {
-  snprintf(buffer, bufferSize, "%04d-%02d-%02dT%02d:%02d:%02dZ", 
+  snprintf(buffer, bufferSize, "%04d-%02d-%02dT%02d:%02d:%02d.%02dZ", 
            gps.date.year(), gps.date.month(), gps.date.day(),
-           gps.time.hour(), gps.time.minute(), gps.time.second());
+           gps.time.hour(), gps.time.minute(), gps.time.second(), gpsms);
 }
 
 void sendTime()
@@ -94,13 +108,11 @@ void sendTime()
 
 void setTimeGPS()
 {
-  static bool primed;
-  static bool high_wait;
   static time_t next_time;
 
   // pps output stops when no fix
   if (!primed &&
-      gps.time.isUpdated() &&
+      //gps.time.isUpdated() &&
       gps.time.age() < 500 &&
       (setclock >= SET_TIMEOUT || year() < 2024))
   {
@@ -113,26 +125,26 @@ void setTimeGPS()
     tm.Hour = gps.time.hour();
     tm.Minute = gps.time.minute();
     tm.Second = gps.time.second();
-    next_time = makeTime(tm) + 1;
+    next_time = makeTime(tm);
 
     primed = true;
+    if (pps_state) high_wait = true;
   }
 
   if (primed)
-  { // Set system time from GPS data string
+  { 
+    // Set system time from GPS data string
     // if high, wait for low, set flag
     // if high and flag set, set time
 
-    high_wait = true;
-    if (!PPS_PIN)
+    if (!pps_state)
     {
       high_wait = false;
     }
-    if (PPS_PIN && !high_wait)
+    if (pps_state && !high_wait)
     {
+      Serial.println("Synching time");
       setTime(next_time);
-
-      // Set the RTC in teensy from system time
       Teensy3Clock.set(next_time);
       sendTime();
       setclock = 0;
@@ -166,7 +178,7 @@ void logData() {
   char timestamp[25];
   getISO8601Timestamp(timestamp, sizeof(timestamp));
   char dataString[100];
-  if (gps.location.age() < 500)
+  if (gps.location.age() < 1000)
   {
     double longitude = gps.location.lng(); 
     double latitude = gps.location.lat();
@@ -197,6 +209,8 @@ void setup()
 {
   
   pinMode(PPS_PIN, INPUT);
+
+  attachInterrupt(digitalPinToInterrupt(PPS_PIN), ppsISR, CHANGE);
   Serial.begin(9600);
   while (!Serial);  // Wait for Arduino Serial Monitor to open
   SerialGPS.begin(9600);
@@ -240,9 +254,16 @@ void loop()
       getISO8601TimestampGPS(iso_gps, sizeof(iso_gps));
       Serial.print("Teensy clock: ");
       Serial.println(iso_ts);
+      tms = 0;
       Serial.print("GPS clock:    ");
       Serial.println(iso_gps);
       logData();
+      Serial.print("Primed: ");
+      Serial.println(primed);
+      Serial.print("PPS state: ");
+      Serial.println(pps_state);
+      Serial.print("High wait");
+      Serial.println(pps_state);
       Serial.println();
     }
   }
