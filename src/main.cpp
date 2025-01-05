@@ -2,7 +2,6 @@
 #include <TimeLib.h>
 #include <TinyGPSPlus.h>
 #include <SD.h>
-
 /*
    TinyGPSPlus (TinyGPSPlus) object.
    Compare to RTC on interval, set RTC if !=
@@ -16,7 +15,10 @@
 #define TIME_HEADER "T"
 #define SET_TIMEOUT 10 * 1000
 #define PPS_PIN 2
+#define DATAFILE_INTERVAL 30  // Create new file every hour
 
+const unsigned int FLUSH_INTERVAL = 10;  // Flush every 10 writes
+File dataFile;  // Global file handle
 // Offset hours from gps time (UTC)
 const int offset = 1;   // Central European Time
 time_t prevDisplay = 0; // when the digital clock was displayed
@@ -86,14 +88,14 @@ void displayInfo()
 void getISO8601Timestamp(char* buffer, size_t bufferSize)
 {
   snprintf(buffer, bufferSize, "%04d-%02d-%02dT%02d:%02d:%02d.%02dZ", 
-           year(), month(), day(), hour(), minute(), second(), tms);
+           year(), month(), day(), hour(), minute(), second(), (int)tms);
 }
 
 void getISO8601TimestampGPS(char* buffer, size_t bufferSize)
 {
   snprintf(buffer, bufferSize, "%04d-%02d-%02dT%02d:%02d:%02d.%02dZ", 
            gps.date.year(), gps.date.month(), gps.date.day(),
-           gps.time.hour(), gps.time.minute(), gps.time.second(), gpsms);
+           gps.time.hour(), gps.time.minute(), gps.time.second(), (int)gpsms);
 }
 
 void sendTime()
@@ -175,6 +177,8 @@ void digitalClockDisplay(){
 }
 
 void logData() {
+  static unsigned int writeCount = 0;
+
   char timestamp[25];
   getISO8601Timestamp(timestamp, sizeof(timestamp));
   char dataString[100];
@@ -191,17 +195,48 @@ void logData() {
     snprintf(dataString, sizeof(dataString), "%s,%s,%s", timestamp, longitude, latitude);
   }
 
-  File dataFile = SD.open("datalog.txt", FILE_WRITE);
+  // Check if file is open, if not try to open it
+  if (!dataFile) {
+    dataFile = SD.open("datalog.txt", FILE_WRITE);
+    if (!dataFile) {
+      Serial.println("error opening datalog.txt");
+      return;
+    }
+  }
 
-  // if the file is available, write to it:
-  if (dataFile) {
-    dataFile.println(dataString);
-    dataFile.close();
-    // print to the serial port too:
-    Serial.println(dataString);
-  } else {
-    // if the file isn't open, pop up an error:
-    Serial.println("error opening datalog.txt");
+  // Write to file
+  dataFile.println(dataString);
+  Serial.println(dataString);
+  // Increment counter and flush if needed
+  writeCount++;
+  if (writeCount >= FLUSH_INTERVAL) {
+    dataFile.flush();
+    writeCount = 0;
+  }
+}
+
+void createNewDatafile() {
+  static time_t lastFileTime = 0;
+  time_t currentTime = now();
+
+  if (currentTime - lastFileTime >= DATAFILE_INTERVAL || lastFileTime == 0) {
+    if (dataFile) {
+      dataFile.close();
+    }
+    
+    char filename[32];
+    snprintf(filename, sizeof(filename), "data_%04d%02d%02d_%02d%02d.txt", 
+        year(), month(), day(), hour(), minute());
+    
+    dataFile = SD.open(filename, FILE_WRITE);
+    if (!dataFile) {
+      Serial.println("Error creating new data file");
+      return;
+    }
+    
+    lastFileTime = currentTime;
+    Serial.print("Created new file: ");
+    Serial.println(filename);
   }
 }
 
@@ -239,6 +274,20 @@ void setup()
 
 void loop()
 {
+  if (Serial.available()) {
+    char c = Serial.read();
+    if (c == 's') {
+      Serial.println("Stopping data acquisition...");
+      if (dataFile) {
+        dataFile.flush();
+        dataFile.close();
+      }
+      Serial.println("Data acquisition stopped");
+      while (1) {
+        delay(1000); // Idle loop
+      }
+    }
+  }
   while (SerialGPS.available())
   {
     // process gps messages
@@ -257,13 +306,14 @@ void loop()
       tms = 0;
       Serial.print("GPS clock:    ");
       Serial.println(iso_gps);
-      logData();
       Serial.print("Primed: ");
       Serial.println(primed);
       Serial.print("PPS state: ");
       Serial.println(pps_state);
       Serial.print("High wait");
       Serial.println(pps_state);
+      createNewDatafile();
+      logData();
       Serial.println();
     }
   }
