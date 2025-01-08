@@ -2,6 +2,7 @@
 #include <TimeLib.h>
 #include <TinyGPSPlus.h>
 #include <SD.h>
+#include <MTP_Teensy.h>
 /*
    TinyGPSPlus (TinyGPSPlus) object.
    Compare to RTC on interval, set RTC if !=
@@ -38,6 +39,7 @@ bool high_wait = false;
 volatile bool pps_state = false;
 elapsedMillis gpsms;
 elapsedMillis tms;
+bool logging = false;
 
 void ppsISR() {
   bool state = digitalRead(PPS_PIN);
@@ -270,9 +272,20 @@ void createNewDatafile() {
   }
 }
 
+void menu() {
+  Serial.println();
+  Serial.println("Menu Options:");
+  Serial.println("\ts - Start Logging data");
+  Serial.println("\tx - Stop Logging data");
+  Serial.println("\tr - reset MTP");
+  Serial.println("\th - Menu");
+  Serial.println();
+}
+
 void setup()
 {
   
+  MTP.begin();
   pinMode(PPS_PIN, INPUT);
   analogReadResolution(12);
 
@@ -303,51 +316,75 @@ void setup()
     }
   }
   Serial.println("card initialized.");
+  MTP.addFilesystem(SD, "SD Card");
+  menu();
 }
 
 void loop()
 {
-
+  // Service MTP
+  MTP.loop();
+  
   if (Serial.available()) {
-    char c = Serial.read();
-    if (c == 's') {
+    uint8_t command = Serial.read();
+    int ch = Serial.read();
+    while (ch == ' ')
+      ch = Serial.read();
+
+    switch (command) {
+    case 's': {
+      Serial.println("\nLogging Data!!!");
+      logging = true; 
+    } break;
+    case 'x':
       Serial.println("Stopping data acquisition...");
       if (dataFile) {
-        dataFile.flush();
+        logging = false;
         dataFile.close();
       }
       Serial.println("Data acquisition stopped");
-      while (1) {
-        delay(1000); // Idle loop
-      }
+      break;
+    case 'r':
+      Serial.println("Send Device Reset Event");
+      MTP.send_DeviceResetEvent();
+      break;
+    default:
+      menu();
+      break;
     }
+    while (Serial.read() != -1)
+      ; // remove rest of characters.
   }
+
   while (SerialGPS.available())
   {
     // process gps messages
     gps.encode(SerialGPS.read());
   }
+
   setTimeGPS();
+
   if (timeStatus() != timeNotSet)
   {
     if (now() != prevDisplay)
     { // update the display only if the time has changed
+      tms = 0;
       prevDisplay = now();
       getISO8601Timestamp(iso_ts, sizeof(iso_ts));
       getISO8601TimestampGPS(iso_gps, sizeof(iso_gps));
       Serial.print("Teensy clock: ");
       Serial.println(iso_ts);
-      tms = 0;
       Serial.print("GPS clock:    ");
       Serial.println(iso_gps);
-      Serial.print("Primed: ");
-      Serial.println(primed);
-      Serial.print("PPS state: ");
-      Serial.println(pps_state);
-      Serial.print("High wait");
-      Serial.println(pps_state);
-      createNewDatafile();
-      logData();
+      if (logging)
+      {
+        createNewDatafile();
+        logData();
+      }
+      else
+      {
+        Serial.println("Not logging");
+      }
       Serial.println();
     }
   }
