@@ -16,7 +16,13 @@
 #define SET_TIMEOUT 10 * 1000
 #define PPS_PIN 2
 #define DATAFILE_INTERVAL 30  // Create new file every hour
+#define BUFFER_SIZE 10
+#define SAMPLE_INTERVAL_US 100000  // 100ms in microseconds
 
+IntervalTimer adcTimer;
+volatile uint16_t adcBuffer[BUFFER_SIZE];
+volatile uint8_t bufferIndex = 0;
+volatile bool bufferFull = false;
 const unsigned int FLUSH_INTERVAL = 10;  // Flush every 10 writes
 File dataFile;  // Global file handle
 // Offset hours from gps time (UTC)
@@ -41,6 +47,24 @@ void ppsISR() {
   pps_state = state;
 }
 
+void adcISR() {
+  adcBuffer[bufferIndex] = analogRead(A2);
+  bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
+  if (bufferIndex == 0) {
+    bufferFull = true;
+  }
+}
+
+float getADCAverage() {
+  float sum = 0;
+  uint8_t count = bufferFull ? BUFFER_SIZE : bufferIndex;
+  if (count == 0) return 0;
+  
+  for (uint8_t i = 0; i < count; i++) {
+    sum += adcBuffer[i];
+  }
+  return sum / count;
+}
 
 time_t getTeensy3Time()
 {
@@ -181,18 +205,24 @@ void logData() {
 
   char timestamp[25];
   getISO8601Timestamp(timestamp, sizeof(timestamp));
-  char dataString[100];
+  char dataString[120];
+
+  float voltage = (getADCAverage() * 3.3) / 4096.0;  // Convert to voltage
+
   if (gps.location.age() < 1000)
   {
-    double longitude = gps.location.lng(); 
+    double longitude = gps.location.lng();
     double latitude = gps.location.lat();
-    snprintf(dataString, sizeof(dataString), "%s,%.6f,%.6f", timestamp, longitude, latitude);
+    snprintf(dataString, sizeof(dataString), "%s,%.6f,%.6f,%.3f",
+             timestamp, longitude, latitude, voltage);
   }
   else
   {
-    const char* longitude = "NA"; 
-    const char* latitude = "NA";
+    const char *longitude = "NA";
+    const char *latitude = "NA";
     snprintf(dataString, sizeof(dataString), "%s,%s,%s", timestamp, longitude, latitude);
+    snprintf(dataString, sizeof(dataString), "%s,%s,%s,%.3f",
+             timestamp, longitude, latitude, voltage);
   }
 
   // Check if file is open, if not try to open it
@@ -244,6 +274,9 @@ void setup()
 {
   
   pinMode(PPS_PIN, INPUT);
+  analogReadResolution(12);
+
+  adcTimer.begin(adcISR, SAMPLE_INTERVAL_US);
 
   attachInterrupt(digitalPinToInterrupt(PPS_PIN), ppsISR, CHANGE);
   Serial.begin(9600);
@@ -274,6 +307,7 @@ void setup()
 
 void loop()
 {
+
   if (Serial.available()) {
     char c = Serial.read();
     if (c == 's') {
