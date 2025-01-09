@@ -1,24 +1,31 @@
+/*
+Datalogger demo
+
+RTC and teensy clock synced to GPS
+~ms precision using GPS PPS signal
+log position and analog reading
+sample and average analog at 100Hz
+Keep SD file open, flush every 10s
+serial control of start/stop
+SD available via MTP
+*/
+
 #include <Arduino.h>
 #include <TimeLib.h>
 #include <TinyGPSPlus.h>
 #include <SD.h>
 #include <MTP_Teensy.h>
-/*
-   TinyGPSPlus (TinyGPSPlus) object.
-   Compare to RTC on interval, set RTC if !=
-   Write time and position to SD on interval
-   Use struct to store data
-   TODO: add sync to another teensy with "T" unixtime serial send
-*/
 
 #define SerialGPS Serial1
 #define SerialLander Serial2
 #define TIME_HEADER "T"
-#define SET_TIMEOUT 10 * 1000
-#define PPS_PIN 2
-#define DATAFILE_INTERVAL 30  // Create new file every hour
-#define BUFFER_SIZE 10
-#define SAMPLE_INTERVAL_US 100000  // 100ms in microseconds
+#define GPS_SET_TIMEOUT 10 * 1000 // GPS sync frequency (ms)
+#define PPS_PIN 33
+#define ANALOG_CHAN A0
+#define DATAFILE_INTERVAL 3600 * 4  // Time before new file creation (s)
+// sample analog at 100Hz
+#define BUFFER_SIZE 100
+#define SAMPLE_INTERVAL_US 10000  // 10ms in microseconds
 
 IntervalTimer adcTimer;
 volatile uint16_t adcBuffer[BUFFER_SIZE];
@@ -42,15 +49,12 @@ elapsedMillis tms;
 bool logging = false;
 
 void ppsISR() {
-  bool state = digitalRead(PPS_PIN);
-  if (state && !pps_state) { // Rising edge
-    gpsms = 0;
-  }
-  pps_state = state;
+  gpsms = 0;
+  pps_state = 1;
 }
 
 void adcISR() {
-  adcBuffer[bufferIndex] = analogRead(A2);
+  adcBuffer[bufferIndex] = analogRead(ANALOG_CHAN);
   bufferIndex = (bufferIndex + 1) % BUFFER_SIZE;
   if (bufferIndex == 0) {
     bufferFull = true;
@@ -71,44 +75,6 @@ float getADCAverage() {
 time_t getTeensy3Time()
 {
   return Teensy3Clock.get();
-}
-
-void displayInfo()
-{
-  if (gps.location.isUpdated())
-  {
-    Serial.print(F("Location: ")); 
-    Serial.print(gps.location.lat(), 6);
-    Serial.print(F(","));
-    Serial.print(gps.location.lng(), 6);
-    Serial.println();
-  }
-
-  if (gps.date.isUpdated() && gps.time.isUpdated())
-  {
-    Serial.print(F("  Date/Time: "));
-    Serial.print(gps.date.month());
-    Serial.print(F("/"));
-    Serial.print(gps.date.day());
-    Serial.print(F("/"));
-    Serial.print(gps.date.year());
-    Serial.print(F(" "));
-    if (gps.time.hour() < 10) Serial.print(F("0"));
-    Serial.print(gps.time.hour());
-    Serial.print(F(":"));
-    if (gps.time.minute() < 10) Serial.print(F("0"));
-    Serial.print(gps.time.minute());
-    Serial.print(F(":"));
-    if (gps.time.second() < 10) Serial.print(F("0"));
-    Serial.print(gps.time.second());
-    Serial.print(F("."));
-    if (gps.time.centisecond() < 10) Serial.print(F("0"));
-    Serial.print(gps.time.centisecond());
-    Serial.print(F(" Fix age: "));
-    Serial.print(gps.time.age());
-    Serial.println();
-    Serial.println(gps.time.value());
-  }
 }
 
 void getISO8601Timestamp(char* buffer, size_t bufferSize)
@@ -137,69 +103,30 @@ void sendTime()
 void setTimeGPS()
 {
   static time_t next_time;
-
-  // pps output stops when no fix
-  if (!primed &&
-      //gps.time.isUpdated() &&
-      gps.time.age() < 500 &&
-      (setclock >= SET_TIMEOUT || year() < 2024))
+  if (pps_state)
   {
-    Serial.println("Priming GPS time");
-
-    tmElements_t tm;
-    tm.Year = gps.date.year() - 1970;
-    tm.Month = gps.date.month();
-    tm.Day = gps.date.day();
-    tm.Hour = gps.time.hour();
-    tm.Minute = gps.time.minute();
-    tm.Second = gps.time.second();
-    next_time = makeTime(tm);
-
-    primed = true;
-    if (pps_state) high_wait = true;
-  }
-
-  if (primed)
-  { 
-    // Set system time from GPS data string
-    // if high, wait for low, set flag
-    // if high and flag set, set time
-
-    if (!pps_state)
+    pps_state = 0;
+    // pps output stops when no fix
+    if (year() < 2024 ||
+       (setclock >= GPS_SET_TIMEOUT &&
+        gps.time.age() < 1000))
     {
-      high_wait = false;
-    }
-    if (pps_state && !high_wait)
-    {
-      Serial.println("Synching time");
+      tmElements_t tm;
+      tm.Year = gps.date.year() - 1970;
+      tm.Month = gps.date.month();
+      tm.Day = gps.date.day();
+      tm.Hour = gps.time.hour();
+      tm.Minute = gps.time.minute();
+      tm.Second = gps.time.second();
+      next_time = makeTime(tm);
+
       setTime(next_time);
       Teensy3Clock.set(next_time);
       sendTime();
       setclock = 0;
-      primed = false;
+      Serial.println("Synching time");
     }
   }
-}
-
-void printDigits(int digits) {
-  // utility function for digital clock display: prints preceding colon and leading 0
-  Serial.print(":");
-  if(digits < 10) Serial.print('0');
-  Serial.print(digits);
-}
-
-void digitalClockDisplay(){
-  // digital clock display of the time
-  Serial.print(hour());
-  printDigits(minute());
-  printDigits(second());
-  Serial.print(" ");
-  Serial.print(day());
-  Serial.print(" ");
-  Serial.print(month());
-  Serial.print(" ");
-  Serial.print(year()); 
-  Serial.println(); 
 }
 
 void logData() {
@@ -291,7 +218,7 @@ void setup()
 
   adcTimer.begin(adcISR, SAMPLE_INTERVAL_US);
 
-  attachInterrupt(digitalPinToInterrupt(PPS_PIN), ppsISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PPS_PIN), ppsISR, RISING);
   Serial.begin(9600);
   while (!Serial);  // Wait for Arduino Serial Monitor to open
   SerialGPS.begin(9600);
@@ -369,6 +296,7 @@ void loop()
     if (now() != prevDisplay)
     { // update the display only if the time has changed
       tms = 0;
+      if (gps.time.age() >= 1000 ) gpsms = 0;
       prevDisplay = now();
       getISO8601Timestamp(iso_ts, sizeof(iso_ts));
       getISO8601TimestampGPS(iso_gps, sizeof(iso_gps));
