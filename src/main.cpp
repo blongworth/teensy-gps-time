@@ -15,6 +15,7 @@ SD available via MTP
 #include <TinyGPSPlus.h>
 #include <SD.h>
 #include <MTP_Teensy.h>
+#include <Flasher.h>
 
 #define SerialGPS Serial1
 #define SerialLander Serial2
@@ -47,6 +48,12 @@ volatile bool pps_state = false;
 elapsedMillis gpsms;
 elapsedMillis tms;
 bool logging = false;
+
+// create a Flasher object
+int onTime = 1000;
+int offTime = 0;
+Flasher flasher(LED_BUILTIN, onTime, offTime);
+
 
 void ppsISR() {
   gpsms = 0;
@@ -225,6 +232,7 @@ void setup()
   SerialLander.begin(9600);
   Serial.println("Waiting for GPS time ... ");
   setSyncProvider(getTeensy3Time);
+  flasher.begin();
 
   delay(100);
   if (timeStatus()!= timeSet) {
@@ -252,6 +260,9 @@ void loop()
   // Service MTP
   MTP.loop();
   
+  // Service flasher
+  flasher.run();
+  
   if (Serial.available()) {
     uint8_t command = Serial.read();
     int ch = Serial.read();
@@ -262,12 +273,14 @@ void loop()
     case 's': {
       Serial.println("\nLogging Data!!!");
       logging = true; 
+      flasher.update(100, 900);
     } break;
     case 'x':
       Serial.println("Stopping data acquisition...");
       if (dataFile) {
         logging = false;
         dataFile.close();
+        flasher.update(onTime, offTime);
       }
       Serial.println("Data acquisition stopped");
       break;
