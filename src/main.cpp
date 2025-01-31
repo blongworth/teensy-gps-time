@@ -227,7 +227,6 @@ void setup()
 
   attachInterrupt(digitalPinToInterrupt(PPS_PIN), ppsISR, RISING);
   Serial.begin(9600);
-  while (!Serial);  // Wait for Arduino Serial Monitor to open
   SerialGPS.begin(9600);
   SerialLander.begin(9600);
   Serial.println("Waiting for GPS time ... ");
