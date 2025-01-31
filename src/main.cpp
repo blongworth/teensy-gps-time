@@ -16,6 +16,7 @@ SD available via MTP
 #include <SD.h>
 #include <MTP_Teensy.h>
 #include <Flasher.h>
+#include <EEPROM.h>
 
 #define SerialGPS Serial1
 #define SerialLander Serial2
@@ -252,6 +253,12 @@ void setup()
   Serial.println("card initialized.");
   MTP.addFilesystem(SD, "SD Card");
   menu();
+  if (EEPROM.read(0))
+  {
+    Serial.println("Logging Data!!!");
+    logging = true;
+    flasher.update(100, 900);
+  }
 }
 
 void loop()
@@ -272,12 +279,14 @@ void loop()
     case 's': {
       Serial.println("\nLogging Data!!!");
       logging = true; 
+      EEPROM.write(0, 1); 
       flasher.update(100, 900);
     } break;
     case 'x':
       Serial.println("Stopping data acquisition...");
       if (dataFile) {
         logging = false;
+        EEPROM.write(0, 0);
         dataFile.close();
         flasher.update(onTime, offTime);
       }
